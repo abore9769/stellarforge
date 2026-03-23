@@ -99,11 +99,36 @@ pub struct GovernorContract;
 
 #[contractimpl]
 impl GovernorContract {
-    /// Initialize the governor with configuration.
+    /// Initialize the governor with its configuration.
+    ///
+    /// Stores the [`GovernorConfig`] on-chain. Must be called exactly once
+    /// immediately after deployment. Does not require auth — the deployer is
+    /// responsible for calling this before any proposals are created.
+    ///
+    /// # Parameters
+    /// - `config` — A [`GovernorConfig`] specifying:
+    ///   - `vote_token`: Address of the Soroban token used for voting weight.
+    ///   - `voting_period`: Seconds a proposal remains open for voting. Must be > 0.
+    ///   - `quorum`: Minimum total votes (for + against) required for a proposal to pass. Must be > 0.
+    ///   - `timelock_delay`: Seconds between a proposal passing and being executable.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
     ///
     /// # Errors
-    /// - `GovernorError::AlreadyInitialized` if already configured.
-    /// - `GovernorError::InvalidConfig` if quorum or voting period is zero.
+    /// - [`GovernorError::AlreadyInitialized`] — Contract has already been initialized.
+    /// - [`GovernorError::InvalidConfig`] — `quorum` or `voting_period` is zero.
+    ///
+    /// # Example
+    /// ```text
+    /// let config = GovernorConfig {
+    ///     vote_token: token_address,
+    ///     voting_period: 3600,  // 1 hour
+    ///     quorum: 1_000_000,
+    ///     timelock_delay: 86400, // 24 hours
+    /// };
+    /// client.initialize(&config);
+    /// ```
     pub fn initialize(env: Env, config: GovernorConfig) -> Result<(), GovernorError> {
         if env.storage().instance().has(&DataKey::Config) {
             return Err(GovernorError::AlreadyInitialized);
@@ -117,8 +142,26 @@ impl GovernorContract {
 
     /// Create a new governance proposal.
     ///
+    /// Opens a new proposal for voting immediately, with `vote_end` set to
+    /// `current_timestamp + voting_period`. The proposer's approval is not
+    /// automatically recorded — owners must call [`vote`](Self::vote) separately.
+    /// Requires authorization from `proposer`.
+    ///
+    /// # Parameters
+    /// - `proposer` — Address submitting the proposal. Can be any account.
+    /// - `title` — Short human-readable title for the proposal.
+    /// - `description` — Full description of what the proposal intends to do.
+    ///
     /// # Returns
-    /// The proposal ID.
+    /// `Ok(proposal_id)` — the unique ID assigned to the new proposal.
+    ///
+    /// # Errors
+    /// - [`GovernorError::NotInitialized`] — `initialize` has not been called.
+    ///
+    /// # Example
+    /// ```text
+    /// let id = client.propose(&proposer, &String::from_str(&env, "Upgrade v2"), &String::from_str(&env, "..."));
+    /// ```
     pub fn propose(
         env: Env,
         proposer: Address,
@@ -164,15 +207,30 @@ impl GovernorContract {
 
     /// Cast a vote on an active proposal.
     ///
+    /// Adds `weight` to either `votes_for` or `votes_against` depending on
+    /// `support`. Each address may only vote once per proposal.
+    /// Requires authorization from `voter`.
+    ///
     /// # Parameters
-    /// - `voter`: Address casting the vote.
-    /// - `proposal_id`: ID of the proposal.
-    /// - `support`: `true` = vote for, `false` = vote against.
-    /// - `weight`: Number of tokens (voting power) to cast.
+    /// - `voter` — Address casting the vote.
+    /// - `proposal_id` — ID of the proposal to vote on.
+    /// - `support` — `true` to vote in favor, `false` to vote against.
+    /// - `weight` — Voting power to apply, typically the voter's token balance.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
     ///
     /// # Errors
-    /// - `GovernorError::VotingClosed` if the voting period has ended.
-    /// - `GovernorError::AlreadyVoted` if voter already voted.
+    /// - [`GovernorError::ProposalNotFound`] — No proposal exists with `proposal_id`.
+    /// - [`GovernorError::AlreadyVoted`] — `voter` has already voted on this proposal.
+    /// - [`GovernorError::VotingClosed`] — The proposal is no longer in `Active` state
+    ///   or the voting period has expired.
+    ///
+    /// # Example
+    /// ```text
+    /// // Vote in favor with 500 tokens of weight
+    /// client.vote(&voter, &proposal_id, &true, &500);
+    /// ```
     pub fn vote(
         env: Env,
         voter: Address,
@@ -216,11 +274,31 @@ impl GovernorContract {
         Ok(())
     }
 
-    /// Finalize a proposal after voting ends. Sets state to Passed or Failed.
+    /// Finalize a proposal after its voting period ends.
+    ///
+    /// Evaluates the vote totals against the configured quorum and sets the
+    /// proposal state to [`ProposalState::Passed`] or [`ProposalState::Failed`].
+    /// If passed, records the current timestamp in `passed_at` to start the
+    /// timelock countdown. Can be called by anyone.
+    ///
+    /// # Parameters
+    /// - `proposal_id` — ID of the proposal to finalize.
+    ///
+    /// # Returns
+    /// `Ok(`[`ProposalState`]`)` — the resulting state (`Passed` or `Failed`).
     ///
     /// # Errors
-    /// - `GovernorError::VotingStillOpen` if voting period hasn't ended.
-    /// - `GovernorError::AlreadyExecuted` if already finalized.
+    /// - [`GovernorError::ProposalNotFound`] — No proposal exists with `proposal_id`.
+    /// - [`GovernorError::VotingStillOpen`] — The voting period has not yet ended.
+    /// - [`GovernorError::AlreadyExecuted`] — The proposal has already been finalized
+    ///   or executed (state is not `Active`).
+    ///
+    /// # Example
+    /// ```text
+    /// // After voting_period has elapsed:
+    /// let state = client.finalize(&proposal_id);
+    /// assert_eq!(state, ProposalState::Passed);
+    /// ```
     pub fn finalize(env: Env, proposal_id: u64) -> Result<ProposalState, GovernorError> {
         let mut proposal: Proposal = env
             .storage()
@@ -255,14 +333,31 @@ impl GovernorContract {
         Ok(state)
     }
 
-    /// Mark a passed proposal as executed after the timelock.
+    /// Mark a passed proposal as executed after the timelock delay.
     ///
-    /// In practice, execution logic would be defined per-proposal.
-    /// This marks the proposal executed and enforces the timelock.
+    /// Enforces the timelock by checking that `current_timestamp ≥ passed_at + timelock_delay`.
+    /// In this contract, execution marks the proposal as done on-chain; any
+    /// off-chain or cross-contract action triggered by the proposal should be
+    /// coordinated by the caller. Requires authorization from `executor`.
+    ///
+    /// # Parameters
+    /// - `executor` — Address triggering execution. Can be any account.
+    /// - `proposal_id` — ID of the proposal to execute.
+    ///
+    /// # Returns
+    /// `Ok(())` on success.
     ///
     /// # Errors
-    /// - `GovernorError::ProposalNotPassed` if proposal hasn't passed.
-    /// - `GovernorError::TimelockNotElapsed` if timelock is still active.
+    /// - [`GovernorError::ProposalNotFound`] — No proposal exists with `proposal_id`.
+    /// - [`GovernorError::AlreadyExecuted`] — The proposal has already been executed.
+    /// - [`GovernorError::ProposalNotPassed`] — The proposal did not reach `Passed` state.
+    /// - [`GovernorError::TimelockNotElapsed`] — The timelock delay has not fully passed.
+    ///
+    /// # Example
+    /// ```text
+    /// // After timelock_delay seconds have elapsed since the proposal passed:
+    /// client.execute(&executor, &proposal_id);
+    /// ```
     pub fn execute(env: Env, executor: Address, proposal_id: u64) -> Result<(), GovernorError> {
         executor.require_auth();
 
@@ -294,19 +389,63 @@ impl GovernorContract {
         Ok(())
     }
 
-    /// Get a proposal by ID.
+    /// Return a proposal by its ID.
+    ///
+    /// Read-only; does not modify state. Returns `None` if no proposal exists
+    /// with the given ID.
+    ///
+    /// # Parameters
+    /// - `proposal_id` — The ID returned by [`propose`](Self::propose).
+    ///
+    /// # Returns
+    /// `Some(`[`Proposal`]`)` if found, `None` otherwise.
+    ///
+    /// # Example
+    /// ```text
+    /// if let Some(p) = client.get_proposal(&id) {
+    ///     println!("votes_for: {}", p.votes_for);
+    /// }
+    /// ```
     pub fn get_proposal(env: Env, proposal_id: u64) -> Option<Proposal> {
         env.storage()
             .persistent()
             .get(&DataKey::Proposal(proposal_id))
     }
 
-    /// Get the governor configuration.
+    /// Return the governor configuration set at initialization.
+    ///
+    /// Read-only; returns `None` if `initialize` has not been called yet.
+    ///
+    /// # Returns
+    /// `Some(`[`GovernorConfig`]`)` with the stored configuration, or `None`.
+    ///
+    /// # Example
+    /// ```text
+    /// let config = client.get_config().unwrap();
+    /// println!("quorum: {}", config.quorum);
+    /// ```
     pub fn get_config(env: Env) -> Option<GovernorConfig> {
         env.storage().instance().get(&DataKey::Config)
     }
 
-    /// Check if an address has voted on a proposal.
+    /// Check whether an address has already voted on a proposal.
+    ///
+    /// Read-only; does not modify state. Useful for UIs and integrations to
+    /// prevent submitting a vote that would fail with [`GovernorError::AlreadyVoted`].
+    ///
+    /// # Parameters
+    /// - `proposal_id` — ID of the proposal to check.
+    /// - `voter` — Address to look up.
+    ///
+    /// # Returns
+    /// `true` if `voter` has cast a vote on `proposal_id`, `false` otherwise.
+    ///
+    /// # Example
+    /// ```text
+    /// if !client.has_voted(&proposal_id, &voter) {
+    ///     client.vote(&voter, &proposal_id, &true, &100);
+    /// }
+    /// ```
     pub fn has_voted(env: Env, proposal_id: u64, voter: Address) -> bool {
         env.storage()
             .persistent()
