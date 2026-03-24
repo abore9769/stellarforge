@@ -220,6 +220,10 @@ Each contract in StellarForge is versioned independently. A breaking change in `
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, code style requirements, and the pull request process.
 
+## Community & Discussions
+
+Have a question, idea, or something to share? Join the conversation in [GitHub Discussions](https://github.com/soma-enyi/stellarforge/discussions) — we have dedicated spaces for Q&A, ideas, show-and-tell, and general chat.
+
 ---
 
 ## License
