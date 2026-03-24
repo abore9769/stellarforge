@@ -517,82 +517,6 @@ mod tests {
     fn setup_with_token() -> (Env, Address, Address, Address, Address) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(ForgeVesting, ());
-        let token_admin = Address::generate(&env);
-        let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
-        let beneficiary = Address::generate(&env);
-        let admin = Address::generate(&env);
-        {
-            soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &1_000_000);
-        }
-        (env, contract_id, token_id, beneficiary, admin)
-    }
-
-    #[test]
-    fn test_cancel_before_cliff_beneficiary_gets_zero_admin_gets_all() {
-        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
-        let client = ForgeVestingClient::new(&env, &contract_id);
-        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &500, &1000);
-
-        // advance 100s — still before cliff of 500s
-        env.ledger().with_mut(|l| l.timestamp += 100);
-        client.cancel();
-
-        let tc = soroban_sdk::token::Client::new(&env, &token_id);
-        assert_eq!(tc.balance(&beneficiary), 0);
-        assert_eq!(tc.balance(&admin), 1_000_000);
-    }
-
-    #[test]
-    fn test_cancel_after_cliff_splits_tokens_correctly() {
-        let (env, contract_id, token_id, beneficiary, admin) = setup_with_token();
-        let client = ForgeVestingClient::new(&env, &contract_id);
-        client.initialize(&token_id, &beneficiary, &admin, &1_000_000, &100, &1000);
-
-        // advance 400s — past cliff, 40% vested
-        env.ledger().with_mut(|l| l.timestamp += 400);
-        client.claim();
-        client.cancel();
-
-        let tc = soroban_sdk::token::Client::new(&env, &token_id);
-        // 400/1000 * 1_000_000 = 400_000 vested → beneficiary
-        // remaining 600_000 → admin
-        assert_eq!(tc.balance(&beneficiary), 400_000);
-        assert_eq!(tc.balance(&admin), 600_000);
-    #[test]
-    fn test_transfer_admin_success() {
-        let (env, contract_id, token, beneficiary, admin) = setup();
-        let client = ForgeVestingClient::new(&env, &contract_id);
-        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
-        let new_admin = Address::generate(&env);
-        let result = client.try_transfer_admin(&new_admin);
-        assert!(result.is_ok());
-        let config = client.get_config().unwrap();
-        assert_eq!(config.admin, new_admin);
-    }
-
-    #[test]
-    fn test_transfer_admin_by_non_admin_fails() {
-        let (env, contract_id, token, beneficiary, admin) = setup();
-        let client = ForgeVestingClient::new(&env, &contract_id);
-        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
-        let non_admin = Address::generate(&env);
-        let result = client.try_transfer_admin(&non_admin);
-        assert_eq!(result, Err(Ok(VestingError::Unauthorized)));
-    }
-
-    #[test]
-    fn test_transfer_admin_to_same_admin_fails() {
-        let (env, contract_id, token, beneficiary, admin) = setup();
-        let client = ForgeVestingClient::new(&env, &contract_id);
-        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
-        let result = client.try_transfer_admin(&admin);
-        assert_eq!(result, Err(Ok(VestingError::SameAdmin)));
-    }
-
-    fn setup_with_token() -> (Env, Address, Address, Address, Address) {
-        let env = Env::default();
-        env.mock_all_auths();
         let contract_id = env.register_contract(None, ForgeVesting);
         let token_admin = Address::generate(&env);
         let token_id = env.register_stellar_asset_contract_v2(token_admin).address();
@@ -635,5 +559,53 @@ mod tests {
         // remaining 600_000 → admin
         assert_eq!(tc.balance(&beneficiary), 400_000);
         assert_eq!(tc.balance(&admin), 600_000);
+    }
+
+    #[test]
+    fn test_transfer_admin_success() {
+        let (env, contract_id, token, beneficiary, admin) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+        let new_admin = Address::generate(&env);
+        let result = client.try_transfer_admin(&new_admin);
+        assert!(result.is_ok());
+        let config = client.get_config();
+        assert_eq!(config.admin, new_admin);
+    }
+
+    #[test]
+    fn test_transfer_admin_by_non_admin_fails() {
+        use soroban_sdk::testutils::{MockAuth, MockAuthInvoke};
+        use soroban_sdk::IntoVal;
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register_contract(None, ForgeVesting);
+        let token = Address::generate(&env);
+        let beneficiary = Address::generate(&env);
+        let admin = Address::generate(&env);
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+
+        let non_admin = Address::generate(&env);
+        env.mock_auths(&[MockAuth {
+            address: &non_admin,
+            invoke: &MockAuthInvoke {
+                contract: &contract_id,
+                fn_name: "transfer_admin",
+                args: (&non_admin,).into_val(&env),
+                sub_invokes: &[],
+            },
+        }]);
+        let result = client.try_transfer_admin(&non_admin);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_transfer_admin_to_same_admin_fails() {
+        let (env, contract_id, token, beneficiary, admin) = setup();
+        let client = ForgeVestingClient::new(&env, &contract_id);
+        client.initialize(&token, &beneficiary, &admin, &1_000_000, &100, &1000);
+        let result = client.try_transfer_admin(&admin);
+        assert_eq!(result, Err(Ok(VestingError::SameAdmin)));
     }
 }

@@ -468,7 +468,7 @@ mod tests {
         vec, Env,
     };
 
-    fn setup_2of3(env: &Env) -> (MultisigContractClient, Address, Address, Address) {
+    fn setup_2of3<'a>(env: &'a Env) -> (MultisigContractClient<'a>, Address, Address, Address) {
         let contract_id = env.register_contract(None, MultisigContract);
         let client = MultisigContractClient::new(env, &contract_id);
         let o1 = Address::generate(env);
@@ -493,11 +493,12 @@ mod tests {
     fn test_initialize_with_duplicate_owners() {
         let env = Env::default();
         env.mock_all_auths();
-        env.register(MultisigContract, ());
+        let contract_id = env.register_contract(None, MultisigContract);
+        let client = MultisigContractClient::new(&env, &contract_id);
         let o1 = Address::generate(&env);
         let owners = vec![&env, o1.clone(), o1.clone(), o1.clone()]; // 3 duplicates
-        MultisigContract::initialize(env.clone(), owners, 1, 0).unwrap();
-        let stored_owners = MultisigContract::get_owners(env);
+        client.initialize(&owners, &1, &0);
+        let stored_owners = client.get_owners();
         assert_eq!(stored_owners.len(), 1);
         assert!(stored_owners.contains(&o1));
     }
