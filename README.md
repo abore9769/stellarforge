@@ -107,6 +107,18 @@ cargo test -p forge-oracle
 
 ---
 
+## 📐 State Diagrams
+
+Visual lifecycle documentation for stateful contracts is available in [`docs/state-diagrams.md`](docs/state-diagrams.md).
+
+| Contract | States |
+| :--- | :--- |
+| `forge-vesting` | Active → Cliff Reached → Fully Vested → Cancelled |
+| `forge-stream` | Active → Finished / Cancelled |
+| `forge-governor` | Active → Passed / Failed → Executed |
+
+---
+
 ## Design Principles
 
 - **No unsafe code** — all contracts are `#![no_std]` and fully safe Rust
