@@ -82,9 +82,23 @@ Before deploying, you'll need a funded testnet account. You can generate and fun
 stellar keys generate <identity_name> --network testnet --fund
 ```
 
+### Using Make (Recommended)
+This project includes a Makefile with common development commands:
+
+| Command | Description |
+| :--- | :--- |
+| `make build` | Build all workspace crates |
+| `make test` | Run all tests |
+| `make lint` | Run clippy linter with deny warnings |
+| `make fmt` | Format code |
+| `make check` | Run fmt + lint + test in sequence |
+| `make clean` | Clean build artifacts |
+
 ### Build all contracts
 
 ```bash
+make build
+# or manually:
 cargo build --workspace
 stellar contract build
 ```
@@ -92,6 +106,8 @@ stellar contract build
 ### Run all tests
 
 ```bash
+make test
+# or manually:
 cargo test --workspace
 ```
 
