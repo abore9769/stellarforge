@@ -63,6 +63,105 @@ All tests must pass before you submit a PR.
 
 ---
 
+## Testing Philosophy
+
+We believe comprehensive tests are essential for smart contract reliability. Good tests prevent bugs, document expected behavior, and give contributors confidence when making changes.
+
+### What to Test
+
+Every contract function should have tests covering:
+
+1. **Happy paths** — Normal, expected usage with valid inputs
+2. **Error paths** — Invalid inputs, unauthorized access, and edge cases that should fail gracefully
+3. **Boundary conditions** — Limits, thresholds, and transition points (e.g., exactly at staleness boundary, one second past)
+4. **State transitions** — Verify state changes persist correctly (e.g., price updates overwrite previous values)
+
+### Test Structure and Naming
+
+- Place tests in a `#[cfg(test)]` module at the bottom of `lib.rs`
+- Name test functions descriptively: `test_<action>_<condition>_<expected_result>`
+  - Good: `test_submit_price_with_zero_value_rejected`
+  - Good: `test_get_price_at_exact_staleness_boundary_succeeds`
+  - Avoid: `test_price`, `test_error_case`
+- Use a `setup()` helper function to reduce boilerplate
+- Group related tests with comments (e.g., `// ── Staleness boundary tests ──`)
+
+### Using Soroban's Test Environment
+
+Soroban provides powerful testing utilities. Key patterns:
+
+```rust
+use soroban_sdk::{
+    testutils::{Address as _, Ledger},
+    Env,
+};
+
+// Mock all authorization checks
+env.mock_all_auths();
+
+// Manipulate ledger time for staleness/expiry tests
+env.ledger().with_mut(|l| l.timestamp = 1000);
+
+// Generate test addresses
+let admin = Address::generate(&env);
+
+// Test error cases with try_ methods
+let result = client.try_submit_price(&base, &quote, &0);
+assert_eq!(result, Err(Ok(OracleError::InvalidPrice)));
+```
+
+### Example of a Well-Written Test
+
+```rust
+/// Verify that submitting a new price for an existing pair overwrites the old one.
+/// This ensures stale prices are not retained.
+#[test]
+fn test_price_update_overwrites_previous_price() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let (_, client) = setup(&env);
+
+    let base = Symbol::new(&env, "XLM");
+    let quote = Symbol::new(&env, "USDC");
+
+    // Submit initial price at timestamp 1000
+    env.ledger().with_mut(|l| l.timestamp = 1000);
+    let initial_price = 10_000_000i128;
+    client.submit_price(&base, &quote, &initial_price);
+
+    // Verify initial price is stored
+    let data = client.get_price(&base, &quote);
+    assert_eq!(data.price, initial_price);
+    assert_eq!(data.updated_at, 1000);
+
+    // Submit new price for the same pair at timestamp 2000
+    env.ledger().with_mut(|l| l.timestamp = 2000);
+    let new_price = 15_000_000i128;
+    client.submit_price(&base, &quote, &new_price);
+
+    // Verify get_price() returns the new price, not the old one
+    let data = client.get_price(&base, &quote);
+    assert_eq!(data.price, new_price, "Expected new price to overwrite old price");
+    assert_eq!(data.updated_at, 2000, "Expected timestamp to be updated");
+}
+```
+
+This test demonstrates:
+- Clear documentation explaining what's being tested
+- Descriptive variable names and comments
+- Testing both the action and its side effects
+- Explicit assertions with helpful failure messages
+- Time manipulation to test state changes
+
+### When Adding New Tests
+
+- If you're fixing a bug, add a test that would have caught it
+- If you're adding a feature, test both success and failure cases
+- If you're modifying existing behavior, update related tests
+- Run `cargo test -p <contract-name>` frequently during development
+
+---
+
 ## Code Style
 
 ### Formatting
