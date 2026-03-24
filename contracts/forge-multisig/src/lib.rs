@@ -441,6 +441,24 @@ impl MultisigContract {
             .unwrap_or(0)
     }
 
+    /// Return the number of owner approvals for a proposal.
+    ///
+    /// Lightweight read-only view intended for UIs that only need approval count.
+    /// Returns `0` if the proposal does not exist.
+    ///
+    /// # Parameters
+    /// - `proposal_id` — The target proposal ID.
+    ///
+    /// # Returns
+    /// Number of approvals currently recorded for the proposal.
+    pub fn get_approval_count(env: Env, proposal_id: u64) -> u32 {
+        env.storage()
+            .persistent()
+            .get::<DataKey, Proposal>(&DataKey::Proposal(proposal_id))
+            .map(|proposal| proposal.approvals.len())
+            .unwrap_or(0)
+    }
+
     // ── Private ───────────────────────────────────────────────────────────────
 
     fn require_owner(env: &Env, address: &Address) -> Result<(), MultisigError> {
@@ -566,5 +584,43 @@ mod tests {
 
         let proposal = MultisigContract::get_proposal(env, pid).unwrap();
         assert!(proposal.executed);
+    }
+
+    #[test]
+    fn test_get_approval_count_zero() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.register(MultisigContract, ());
+
+        assert_eq!(MultisigContract::get_approval_count(env, 999), 0);
+    }
+
+    #[test]
+    fn test_get_approval_count_partial() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.register(MultisigContract, ());
+        let (o1, _, _) = setup_2of3(&env);
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
+
+        let pid = MultisigContract::propose(env.clone(), o1, to, token, 500).unwrap();
+
+        assert_eq!(MultisigContract::get_approval_count(env, pid), 1);
+    }
+
+    #[test]
+    fn test_get_approval_count_full() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.register(MultisigContract, ());
+        let (o1, o2, _) = setup_2of3(&env);
+        let token = Address::generate(&env);
+        let to = Address::generate(&env);
+
+        let pid = MultisigContract::propose(env.clone(), o1, to, token, 500).unwrap();
+        MultisigContract::approve(env.clone(), o2, pid).unwrap();
+
+        assert_eq!(MultisigContract::get_approval_count(env, pid), 2);
     }
 }
