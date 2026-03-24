@@ -683,6 +683,7 @@ mod tests {
     fn test_get_approval_count_zero() {
         let env = Env::default();
         env.mock_all_auths();
+        let (client, _, _, _) = setup_2of3(&env);
         let contract_id = env.register_contract(None, MultisigContract);
         let client = MultisigContractClient::new(&env, &contract_id);
 
@@ -715,6 +716,7 @@ mod tests {
 
         assert_eq!(client.get_approval_count(&pid), 2);
     }
+
     #[test]
     fn test_rejected_proposal_cannot_execute() {
         let env = Env::default();
@@ -820,8 +822,19 @@ mod tests {
     }
 
     #[test]
+    fn test_get_threshold_returns_initialized_value() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let (client, _, _, _) = setup_2of3(&env);
+
+        // setup_2of3 initializes with threshold = 2
+        assert_eq!(client.get_threshold(), 2);
+    }
+
+    #[test]
     fn test_get_owners_list() {
         let env = Env::default();
+        env.mock_all_auths();
         let (client, o1, o2, o3) = setup_2of3(&env);
         let owners = client.get_owner_list();
         assert_eq!(owners.len(), 3);
