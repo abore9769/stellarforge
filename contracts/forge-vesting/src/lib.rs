@@ -214,7 +214,7 @@ impl ForgeVesting {
         }
 
         let vested = Self::compute_vested(&config, now);
-        let claimed: i128 = env.storage().instance().get(&DataKey::Claimed).unwrap_or(0);
+        let claimed = Self::get_claimed(&env);
         let claimable = vested - claimed;
 
         if claimable <= 0 {
@@ -273,7 +273,7 @@ impl ForgeVesting {
 
         let now = env.ledger().timestamp();
         let vested = Self::compute_vested(&config, now);
-        let claimed: i128 = env.storage().instance().get(&DataKey::Claimed).unwrap_or(0);
+        let claimed = Self::get_claimed(&env);
         let returnable = config.total_amount - vested.max(claimed);
 
         config.cancelled = true;
@@ -419,7 +419,7 @@ impl ForgeVesting {
         let elapsed = now.saturating_sub(config.start_time);
         let cliff_reached = elapsed >= config.cliff_seconds;
         let vested = Self::compute_vested(&config, now);
-        let claimed: i128 = env.storage().instance().get(&DataKey::Claimed).unwrap_or(0);
+        let claimed = Self::get_claimed(&env);
         let claimable = (vested - claimed).max(0);
         let fully_vested = vested >= config.total_amount;
 
@@ -494,6 +494,14 @@ impl ForgeVesting {
     }
 
     // ── Private ───────────────────────────────────────────────────────────────
+
+    /// Get the claimed amount from storage.
+    ///
+    /// Returns 0 if called before initialization (though this should never happen
+    /// in practice since all public methods check for initialization first).
+    fn get_claimed(env: &Env) -> i128 {
+        env.storage().instance().get(&DataKey::Claimed).unwrap_or(0)
+    }
 
     fn compute_vested(config: &VestingConfig, now: u64) -> i128 {
         if config.cancelled {
