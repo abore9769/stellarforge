@@ -654,4 +654,342 @@ mod tests {
         assert_eq!(data_unsafe.price, new_price);
         assert_eq!(data_unsafe.updated_at, 2000);
     }
+
+    // ── Multi-pair tests (Issue #44) ───────────────────────────────────────────
+
+    /// Test submitting prices for two different pairs and verifying each returns its own correct price.
+    /// This ensures the oracle correctly maintains separate price data for different trading pairs.
+    #[test]
+    fn test_submit_two_different_pairs() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let (_, client) = setup(&env);
+
+        let xlm = Symbol::new(&env, "XLM");
+        let usdc = Symbol::new(&env, "USDC");
+        let btc = Symbol::new(&env, "BTC");
+
+        // Submit price for XLM/USDC pair
+        let xlm_usdc_price = 1_500_000i128; // 0.15 USDC per XLM
+        client.submit_price(&xlm, &usdc, &xlm_usdc_price);
+
+        // Submit price for BTC/USDC pair
+        let btc_usdc_price = 65_000_000_000i128; // 6500.0 USDC per BTC
+        client.submit_price(&btc, &usdc, &btc_usdc_price);
+
+        // Verify XLM/USDC returns its correct price
+        let xlm_data = client.get_price(&xlm, &usdc);
+        assert_eq!(xlm_data.price, xlm_usdc_price, "XLM/USDC price mismatch");
+        assert_eq!(xlm_data.updated_at, 1000, "XLM/USDC timestamp mismatch");
+
+        // Verify BTC/USDC returns its correct price
+        let btc_data = client.get_price(&btc, &usdc);
+        assert_eq!(btc_data.price, btc_usdc_price, "BTC/USDC price mismatch");
+        assert_eq!(btc_data.updated_at, 1000, "BTC/USDC timestamp mismatch");
+
+        // Verify prices are different and correct
+        assert_ne!(
+            xlm_data.price, btc_data.price,
+            "Different pairs should have different prices"
+        );
+    }
+
+    /// Test that updating one pair does not affect prices of other pairs.
+    /// This verifies that price storage is properly isolated per trading pair.
+    #[test]
+    fn test_updating_one_pair_does_not_affect_other_pairs() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let (_, client) = setup(&env);
+
+        let xlm = Symbol::new(&env, "XLM");
+        let btc = Symbol::new(&env, "BTC");
+        let usdc = Symbol::new(&env, "USDC");
+
+        // Submit initial prices for both pairs
+        let xlm_initial_price = 1_000_000i128;
+        let btc_initial_price = 65_000_000_000i128;
+
+        client.submit_price(&xlm, &usdc, &xlm_initial_price);
+        client.submit_price(&btc, &usdc, &btc_initial_price);
+
+        // Verify both prices are set correctly
+        let xlm_data_before = client.get_price(&xlm, &usdc);
+        let btc_data_before = client.get_price(&btc, &usdc);
+
+        assert_eq!(xlm_data_before.price, xlm_initial_price);
+        assert_eq!(btc_data_before.price, btc_initial_price);
+
+        // Update XLM/USDC price at a later timestamp
+        env.ledger().with_mut(|l| l.timestamp = 2000);
+        let xlm_new_price = 1_500_000i128;
+        client.submit_price(&xlm, &usdc, &xlm_new_price);
+
+        // Verify XLM/USDC was updated
+        let xlm_data_after = client.get_price(&xlm, &usdc);
+        assert_eq!(
+            xlm_data_after.price, xlm_new_price,
+            "XLM/USDC price should be updated"
+        );
+        assert_eq!(
+            xlm_data_after.updated_at, 2000,
+            "XLM/USDC timestamp should be updated"
+        );
+
+        // Verify BTC/USDC was NOT affected by the XLM update
+        let btc_data_after = client.get_price(&btc, &usdc);
+        assert_eq!(
+            btc_data_after.price, btc_initial_price,
+            "BTC/USDC price should not change when XLM/USDC is updated"
+        );
+        assert_eq!(
+            btc_data_after.updated_at, 1000,
+            "BTC/USDC timestamp should not change when XLM/USDC is updated"
+        );
+    }
+
+    /// Test multiple pairs with varying timestamps and staleness states.
+    /// This ensures the oracle correctly handles staleness checks for different pairs independently.
+    #[test]
+    fn test_multiple_pairs_independent_staleness_checks() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let _threshold = 3600u64;
+
+        // Setup at timestamp 1000
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let (_, client) = setup(&env); // staleness_threshold = 3600
+
+        let xlm = Symbol::new(&env, "XLM");
+        let btc = Symbol::new(&env, "BTC");
+        let eth = Symbol::new(&env, "ETH");
+        let usdc = Symbol::new(&env, "USDC");
+
+        // Submit prices for three pairs at timestamp 1000
+        client.submit_price(&xlm, &usdc, &1_000_000i128);
+        client.submit_price(&btc, &usdc, &65_000_000_000i128);
+        client.submit_price(&eth, &usdc, &3_500_000_000i128);
+
+        // All should be fresh at timestamp 1000
+        let xlm_data = client.get_price(&xlm, &usdc);
+        let btc_data = client.get_price(&btc, &usdc);
+        let eth_data = client.get_price(&eth, &usdc);
+
+        assert_eq!(xlm_data.price, 1_000_000);
+        assert_eq!(btc_data.price, 65_000_000_000);
+        assert_eq!(eth_data.price, 3_500_000_000);
+
+        // Advance to timestamp 3000 (within threshold for all)
+        env.ledger().with_mut(|l| l.timestamp = 3000);
+
+        // All prices should still be fresh
+        let xlm_data = client.get_price(&xlm, &usdc);
+        let btc_data = client.get_price(&btc, &usdc);
+        let eth_data = client.get_price(&eth, &usdc);
+
+        assert_eq!(xlm_data.price, 1_000_000);
+        assert_eq!(btc_data.price, 65_000_000_000);
+        assert_eq!(eth_data.price, 3_500_000_000);
+
+        // Update BTC/USDC at timestamp 3000
+        client.submit_price(&btc, &usdc, &68_000_000_000i128);
+
+        // Advance to timestamp 4700 (past staleness threshold for original prices, within for BTC)
+        env.ledger().with_mut(|l| l.timestamp = 4700);
+
+        // XLM/USDC should be stale (last updated at 1000, now is 4700, threshold is 3600)
+        let xlm_result = client.try_get_price(&xlm, &usdc);
+        assert_eq!(xlm_result, Err(Ok(OracleError::PriceStale)), "XLM/USDC should be stale");
+
+        // BTC/USDC should be fresh (last updated at 3000, now is 4700, threshold is 3600)
+        let btc_data = client.get_price(&btc, &usdc);
+        assert_eq!(
+            btc_data.price, 68_000_000_000,
+            "BTC/USDC should be fresh with new price"
+        );
+        assert_eq!(btc_data.updated_at, 3000);
+
+        // ETH/USDC should be stale (last updated at 1000, now is 4700, threshold is 3600)
+        let eth_result = client.try_get_price(&eth, &usdc);
+        assert_eq!(eth_result, Err(Ok(OracleError::PriceStale)), "ETH/USDC should be stale");
+    }
+
+    /// Test that the same base asset can have prices for different quote assets,
+    /// and they are stored and managed independently.
+    #[test]
+    fn test_same_base_different_quotes() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let (_, client) = setup(&env);
+
+        let xlm = Symbol::new(&env, "XLM");
+        let usdc = Symbol::new(&env, "USDC");
+        let eur = Symbol::new(&env, "EUR");
+        let jpy = Symbol::new(&env, "JPY");
+
+        // Submit prices for XLM in different quote currencies
+        let xlm_usdc_price = 1_500_000i128; // 0.15 USDC per XLM
+        let xlm_eur_price = 1_500_000i128; // 0.14 EUR per XLM (example)
+        let xlm_jpy_price = 20_000_000i128; // 20 JPY per XLM (example)
+
+        client.submit_price(&xlm, &usdc, &xlm_usdc_price);
+        client.submit_price(&xlm, &eur, &xlm_eur_price);
+        client.submit_price(&xlm, &jpy, &xlm_jpy_price);
+
+        // Verify each pair has its own correct price
+        let data_usdc = client.get_price(&xlm, &usdc);
+        let data_eur = client.get_price(&xlm, &eur);
+        let data_jpy = client.get_price(&xlm, &jpy);
+
+        assert_eq!(data_usdc.price, xlm_usdc_price, "XLM/USDC price mismatch");
+        assert_eq!(data_eur.price, xlm_eur_price, "XLM/EUR price mismatch");
+        assert_eq!(data_jpy.price, xlm_jpy_price, "XLM/JPY price mismatch");
+
+        // Verify all timestamps are the same (submitted at same time)
+        assert_eq!(data_usdc.updated_at, 1000);
+        assert_eq!(data_eur.updated_at, 1000);
+        assert_eq!(data_jpy.updated_at, 1000);
+
+        // Update one and verify others remain unchanged
+        env.ledger().with_mut(|l| l.timestamp = 2000);
+        let xlm_usdc_new_price = 1_800_000i128;
+        client.submit_price(&xlm, &usdc, &xlm_usdc_new_price);
+
+        let data_usdc_updated = client.get_price(&xlm, &usdc);
+        let data_eur_unchanged = client.get_price(&xlm, &eur);
+        let data_jpy_unchanged = client.get_price(&xlm, &jpy);
+
+        assert_eq!(data_usdc_updated.price, xlm_usdc_new_price);
+        assert_eq!(data_usdc_updated.updated_at, 2000);
+
+        assert_eq!(data_eur_unchanged.price, xlm_eur_price);
+        assert_eq!(data_eur_unchanged.updated_at, 1000);
+
+        assert_eq!(data_jpy_unchanged.price, xlm_jpy_price);
+        assert_eq!(data_jpy_unchanged.updated_at, 1000);
+    }
+
+    /// Test that the same quote asset can track prices for different base assets,
+    /// and they are stored and managed independently.
+    #[test]
+    fn test_different_bases_same_quote() {
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let (_, client) = setup(&env);
+
+        let usdc = Symbol::new(&env, "USDC");
+        let xlm = Symbol::new(&env, "XLM");
+        let btc = Symbol::new(&env, "BTC");
+        let eth = Symbol::new(&env, "ETH");
+
+        // Submit prices for different assets in USDC
+        let xlm_price = 1_500_000i128; // 0.15 USDC per XLM
+        let btc_price = 65_000_000_000i128; // 6500 USDC per BTC
+        let eth_price = 3_500_000_000i128; // 350 USDC per ETH
+
+        client.submit_price(&xlm, &usdc, &xlm_price);
+        client.submit_price(&btc, &usdc, &btc_price);
+        client.submit_price(&eth, &usdc, &eth_price);
+
+        // Verify each pair returns its correct price
+        let xlm_data = client.get_price(&xlm, &usdc);
+        let btc_data = client.get_price(&btc, &usdc);
+        let eth_data = client.get_price(&eth, &usdc);
+
+        assert_eq!(xlm_data.price, xlm_price, "XLM/USDC price mismatch");
+        assert_eq!(btc_data.price, btc_price, "BTC/USDC price mismatch");
+        assert_eq!(eth_data.price, eth_price, "ETH/USDC price mismatch");
+
+        // Verify staleness is tracked independently
+        env.ledger().with_mut(|l| l.timestamp = 2000);
+        client.submit_price(&btc, &usdc, &68_000_000_000i128); // Update BTC only
+
+        env.ledger().with_mut(|l| l.timestamp = 5000);
+
+        // XLM should be stale
+        let xlm_result = client.try_get_price(&xlm, &usdc);
+        assert_eq!(xlm_result, Err(Ok(OracleError::PriceStale)));
+
+        // BTC should be fresh (updated at 2000, now 5000, threshold 3600)
+        let btc_data_fresh = client.get_price(&btc, &usdc);
+        assert_eq!(btc_data_fresh.price, 68_000_000_000);
+
+        // ETH should be stale
+        let eth_result = client.try_get_price(&eth, &usdc);
+        assert_eq!(eth_result, Err(Ok(OracleError::PriceStale)));
+    }
+
+    /// Test that price events are emitted correctly for multiple pairs.
+    /// This ensures the event system properly tracks all price updates across pairs.
+    #[test]
+    fn test_multi_pair_event_emissions() {
+        use soroban_sdk::testutils::Events;
+        let env = Env::default();
+        env.mock_all_auths();
+        env.ledger().with_mut(|l| l.timestamp = 1000);
+        let (_, client) = setup(&env);
+
+        let xlm = Symbol::new(&env, "XLM");
+        let btc = Symbol::new(&env, "BTC");
+        let usdc = Symbol::new(&env, "USDC");
+
+        // Submit prices for multiple pairs
+        client.submit_price(&xlm, &usdc, &1_500_000i128);
+        client.submit_price(&btc, &usdc, &65_000_000_000i128);
+        client.submit_price(&xlm, &usdc, &1_600_000i128); // Update XLM price
+
+        // Verify all events were emitted
+        let events = env.events().all();
+        let mut xlm_event_count = 0;
+        let mut btc_event_count = 0;
+        let mut total_price_updates = 0;
+
+        for (_, topics, data) in events.iter() {
+            if topics
+                .get(0)
+                .and_then(|t| Symbol::try_from_val(&env, &t).ok())
+                .map(|s| s == Symbol::new(&env, "price_updated"))
+                .unwrap_or(false)
+            {
+                total_price_updates += 1;
+
+                // Try to parse the event data as a 4-tuple
+                if let Ok((b, q, _, _)) =
+                    <(Symbol, Symbol, i128, u64)>::try_from_val(&env, &data)
+                {
+                    if b == xlm && q == usdc {
+                        xlm_event_count += 1;
+                    }
+                    if b == btc && q == usdc {
+                        btc_event_count += 1;
+                    }
+                }
+            }
+        }
+
+        // Should have at least 3 price_updated events total
+        assert!(
+            total_price_updates >= 3,
+            "Expected at least 3 price_updated events, found {}",
+            total_price_updates
+        );
+
+        // Should have at least 2 XLM/USDC events (submitted twice)
+        assert!(
+            xlm_event_count >= 2,
+            "Expected at least 2 XLM/USDC events, found {}",
+            xlm_event_count
+        );
+
+        // Should have at least 1 BTC/USDC event
+        assert!(
+            btc_event_count >= 1,
+            "Expected at least 1 BTC/USDC event, found {}",
+            btc_event_count
+        );
+    }
 }
